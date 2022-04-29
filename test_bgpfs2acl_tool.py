@@ -1,4 +1,4 @@
-# import pytest
+import pytest
 
 from bgpfs2acl import BgpFs2AclTool
 

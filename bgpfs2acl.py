@@ -28,10 +28,11 @@ HW_PROFILE_TCAM_CONF = ("hw-module profile tcam format access-list ipv4 src-addr
 
 DEFAULT_ACL_NAME = 'bgpfs2acl-ipv4'
 FS_START_SEQUENCE = 100500
+INT_REGEX = '(?=(^interface (Gig|Ten|Twe|Fo|Hu).*))(?!.*l2transport)'
 
 class BgpFs2AclTool:
-    def __init__(self, ztp_helper):
-        self.grpc_client = ztp_helper
+    def __init__(self, grpc_client):
+        self.grpc_client = grpc_client
 
         self.cached_filtered_interfaces_md5 = None
         self.cached_fs_md5 = None
@@ -48,6 +49,8 @@ class BgpFs2AclTool:
         :return:
         """
         err, interfaces = self.grpc_client.showcmdtextoutput("sh running interface")
+        if err:
+            raise err.errors
         interfaces_dict = {}
         interfaces = interfaces.split('\n')
         for i, line in enumerate(interfaces):
@@ -91,6 +94,8 @@ class BgpFs2AclTool:
 
     def get_flowspec(self):
         err, flowspec_ipv4 = self.grpc_client.showcmdtextoutput('sh flowspec ipv4')
+        if err:
+            raise Exception(err)
 
         if len(flowspec_ipv4) <= 1:
             return None
@@ -99,6 +104,8 @@ class BgpFs2AclTool:
 
     def get_access_lists(self):
         err, acls_raw = self.grpc_client.showcmdtextoutput('sh run ipv4 access-list')
+        if err:
+            raise Exception(err)
         if len(acls_raw) <= 1:
             return None
 
@@ -107,7 +114,11 @@ class BgpFs2AclTool:
 
     def apply_conf(self, conf):
         if conf:
-            return self.grpc_client.cliconfig(conf)
+            response = self.grpc_client.cliconfig(conf)
+            if response.errors:
+                raise Exception(response.errors)
+                
+
 
 
 def convert_flowspec_to_acl_rules(flowspec):
@@ -119,12 +130,12 @@ def convert_flowspec_to_acl_rules(flowspec):
 
 
 def run(bgpfs2acl_tool):
-    # threading.Timer(app_config.upd_frequency, run, [bgpfs2acl_tool]).start()
+    threading.Timer(app_config.upd_frequency, run, [bgpfs2acl_tool]).start()
     logger.debug("start run")
     to_apply = ''
     flowspec = bgpfs2acl_tool.get_flowspec()
     access_lists = bgpfs2acl_tool.get_access_lists()
-    filtered_interfaces = bgpfs2acl_tool.get_interfaces(filter_regx='^interface (Gig|Ten|Twe|Fo|Hu).*')
+    filtered_interfaces = bgpfs2acl_tool.get_interfaces(filter_regx=INT_REGEX)
     logger.debug("flowspec:", flowspec)
     logger.debug("access_lists", access_lists)
     if flowspec is None:
@@ -140,6 +151,8 @@ def run(bgpfs2acl_tool):
 
     else:
         filtered_interfaces_md5 = get_interfaces_md5(filtered_interfaces)
+        print("Flowspec config: \n" + flowspec.config)
+        print("\n\nHASH: " + flowspec.md5)
         if flowspec.md5 != bgpfs2acl_tool.cached_fs_md5 \
                 or filtered_interfaces_md5 != bgpfs2acl_tool.cached_filtered_interfaces_md5:
             bound_acls = set()
@@ -178,7 +191,7 @@ def run(bgpfs2acl_tool):
     if to_apply:
         bgpfs2acl_tool.apply_conf(to_apply)
 
-        updated_interfaces = bgpfs2acl_tool.get_interfaces(filter_regx='^interface (Gig|Ten|Twe|Fo|Hu).*')
+        updated_interfaces = bgpfs2acl_tool.get_interfaces(filter_regx=INT_REGEX)
         updated_interfaces_md5 = get_interfaces_md5(updated_interfaces)
         bgpfs2acl_tool.cached_filtered_interfaces_md5 = updated_interfaces_md5
 
