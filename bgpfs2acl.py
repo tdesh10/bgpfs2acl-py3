@@ -15,10 +15,11 @@ import threading
 from logging.handlers import SysLogHandler
 
 from conf import settings
-from conf.settings import log_config, app_config
+from conf.settings import log_config, app_config, set_app_config
 from src.flowspec import FlowSpec
 from src.func_lib import get_interfaces_md5
 from src.access_list import AccessList, AccessListEntry
+from src.utils import convert_flowspec_to_acl_rules
 
 # logging.config.dictConfig(log_config)
 logger = logging.getLogger(__name__)
@@ -33,12 +34,8 @@ INT_REGEX = '(?=(^interface (Gig|Ten|Twe|Fo|Hu).*))(?!.*l2transport)'
 class BgpFs2AclTool:
     def __init__(self, grpc_client):
         self.grpc_client = grpc_client
-
         self.cached_filtered_interfaces_md5 = None
         self.cached_fs_md5 = None
-    def _check_grpc_err(err):
-        if err != "":
-            raise(err)
 
     def get_interfaces(self, include_shutdown=False, filter_regx=None):
         """
@@ -116,19 +113,8 @@ class BgpFs2AclTool:
         if conf:
             response = self.grpc_client.cliconfig(conf)
             if response.errors:
-                raise Exception(response.errors)
-                
-
-
-
-def convert_flowspec_to_acl_rules(flowspec):
-    converted_rules = []
-    for fs_rule in flowspec.rules:
-        access_list_entries = [ace.rule for ace in AccessListEntry.from_flowspec_rule(fs_rule)]
-        converted_rules.extend(access_list_entries)
-    return converted_rules
-
-
+                 raise Exception(response.errors)          
+    
 def run(bgpfs2acl_tool):
     threading.Timer(app_config.upd_frequency, run, [bgpfs2acl_tool]).start()
     logger.debug("start run")
@@ -136,8 +122,6 @@ def run(bgpfs2acl_tool):
     flowspec = bgpfs2acl_tool.get_flowspec()
     access_lists = bgpfs2acl_tool.get_access_lists()
     filtered_interfaces = bgpfs2acl_tool.get_interfaces(filter_regx=INT_REGEX)
-    logger.debug("flowspec:", flowspec)
-    logger.debug("access_lists", access_lists)
     if flowspec is None:
         logger.warning('Flowspec is empty/was not found.')
         for acl in access_lists:
@@ -151,8 +135,8 @@ def run(bgpfs2acl_tool):
 
     else:
         filtered_interfaces_md5 = get_interfaces_md5(filtered_interfaces)
-        print("Flowspec config: \n" + flowspec.config)
-        print("\n\nHASH: " + flowspec.md5)
+        logger.debug("Flowspec config: \n" + flowspec.config)
+        logger.debug("HASH: " + flowspec.md5)
         if flowspec.md5 != bgpfs2acl_tool.cached_fs_md5 \
                 or filtered_interfaces_md5 != bgpfs2acl_tool.cached_filtered_interfaces_md5:
             bound_acls = set()
@@ -212,6 +196,7 @@ def clean_acls(bgpfs2acl_tool):
 
 def setup_syslog():
     root_logger = logging.getLogger()
+    root_logger.setLevel(app_config.syslog_loglevel)
     formatter = logging.Formatter(
         ('bgpfs2acl: { "loggerName":"%(name)s", "asciTime":"%(asctime)s", "pathName":"%(pathname)s",'
          '"logRecordCreationTime":"%(created)f", "functionName":"%(funcName)s", "levelNo":"%(levelno)s",'
@@ -242,34 +227,32 @@ def setup_syslog():
         handler.setLevel(app_config.syslog_loglevel)
         root_logger.addHandler(handler)
 
-
-# def check_hw_module_config(xr_cmd_client):
-#     hw_module_cmd = "sh run {}".format(HW_PROFILE_TCAM_CONF)
-#     print(hw_module_cmd)
-#     res = xr_cmd_client.showcmdtextoutput(hw_module_cmd)
-#     print("Completed XR cmd")
-#     if res[0].startswith("No such configuration item(s)"):
-#         print("No such configuration items")
-#         setattr(settings, settings.PACKET_LENGTH_PERMISSION_NAME, False)
-#     elif res[0].startswith(HW_PROFILE_TCAM_CONF):
-#         print("good configuration items")
-#         setattr(settings, settings.PACKET_LENGTH_PERMISSION_NAME, True)
-#     print("done check_hw_module_config")
+def check_hw_module_config(grpc_client):
+    hw_module_cmd = "sh run | in hw-module"
+    err, res = grpc_client.showcmdtextoutput(hw_module_cmd)
+    if err:
+        raise Exception(err)
+    hw_profile_tcam = res.strip().split('\n')[-1]
+    if hw_profile_tcam != HW_PROFILE_TCAM_CONF:
+        setattr(settings, settings.PACKET_LENGTH_PERMISSION_NAME, False)
+    elif hw_profile_tcam == HW_PROFILE_TCAM_CONF:
+        setattr(settings, settings.PACKET_LENGTH_PERMISSION_NAME, True)
 
 
 def main():
-    setup_syslog()
-    logger.debug("###### Starting BGPFS2ACL RUN on XR based device ######")
-    client = CiscoGRPCClient(app_config.router_host, app_config.router_port, 10, app_config.user, app_config.password)
-    bgpfs2acl_tool = BgpFs2AclTool(client)
-    logger.debug(bgpfs2acl_tool)
     try:
+        global app_config
+        app_config = set_app_config()
+        setup_syslog()
+        client = CiscoGRPCClient(app_config.router_host, app_config.router_port, 10, app_config.user, app_config.password)
+        check_hw_module_config(client)
+        bgpfs2acl_tool = BgpFs2AclTool(client)
+    
         if app_config.revert:
             clean_acls(bgpfs2acl_tool)
             sys.exit()
-
-        # check_hw_module_config(xr_cmd_client)
-        logger.debug("about to run")
+        
+        logger.debug("###### Starting BGPFS2ACL RUN on XR based device ######")
         run(bgpfs2acl_tool)
     except Exception as err:
         logger.error(str(err))

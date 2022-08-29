@@ -132,6 +132,8 @@ class AccessListEntry:
         # Special case for redirect to vrf
         elif nexthop_vrf:
             self._nexthop = self._validate_nexthop_vrf(nexthop_vrf)
+        else:
+            self._nexthop = None
 
     def _validate_nexthop_vrf(self, nexthop_vrf):
         if not nexthop_vrf:

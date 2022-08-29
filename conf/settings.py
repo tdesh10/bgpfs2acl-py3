@@ -71,6 +71,8 @@ parser.add_argument("--syslog-loglevel", type=str, default=__default_syslog_leve
 # Todo add fix line numbers;
 # Todo add verbose story;
 
-app_config = parser.parse_args()
-
+app_config = {}
+def set_app_config():
+    app_config = parser.parse_args()
+    return app_config
 
